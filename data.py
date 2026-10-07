@@ -4,12 +4,13 @@ import pandas as pd
 
 IST = "Asia/Kolkata"
 COLS = ["open", "high", "low", "close", "volume"]
+INDEX_KEYS = ["^NSEI", "^NSEBANK", "^BSESN"]  # NIFTY, BANKNIFTY, SENSEX
 
 
 def fetch_live(symbols):
     """Returns {symbol: (today_1min_df, avg_1m_vol)} incl. '^NSEI'. yfinance is delayed."""
     import yfinance as yf
-    tick = [s + ".NS" for s in symbols] + ["^NSEI"]
+    tick = [s + ".NS" for s in symbols] + INDEX_KEYS
     raw = yf.download(tick, period="5d", interval="1m", group_by="ticker",
                       progress=False, threads=True)
     out = {}
@@ -34,6 +35,8 @@ def split_today(d):
     td, prev = d[d.index.date == last_day], d[d.index.date < last_day]
     n = len(td)
     avg = float(prev.groupby(prev.index.date).head(n)["volume"].mean()) if len(prev) else 0.0
+    td = td.copy()
+    td.attrs["prev_close"] = float(prev["close"].iloc[-1]) if len(prev) else None
     return td, (avg if avg == avg else 0.0)
 
 
@@ -74,9 +77,13 @@ def demo_data(symbols, minutes=45):
         rows += pat
         rows = [(o * p, h * p, l * p, c * p, v) for o, h, l, c, v in rows]
         rows += walk(rows[-1][3], minutes - len(rows), drift)
-        out[s] = (pd.DataFrame(rows, index=idx[:len(rows)], columns=COLS), 1000.0)
-    n = minutes
-    ic = 24800 * (1 + np.cumsum(np.full(n, 0.0002)))
-    out["^NSEI"] = (pd.DataFrame({"open": ic, "high": ic * 1.0002, "low": ic * 0.9998,
-                                  "close": ic, "volume": 1000}, index=idx), 1000.0)
+        df = pd.DataFrame(rows, index=idx[:len(rows)], columns=COLS)
+        df.attrs["prev_close"] = rows[0][0] / (1 + [0.012, -0.01, 0.004, -0.015][kind])
+        out[s] = (df, 1000.0)
+    for key, base in zip(INDEX_KEYS, (24800, 52000, 81000)):
+        ic = base * (1 + np.cumsum(np.full(minutes, 0.0002)))
+        df = pd.DataFrame({"open": ic, "high": ic * 1.0002, "low": ic * 0.9998, "close": ic,
+                           "volume": 1000}, index=idx)
+        df.attrs["prev_close"] = base * 0.995
+        out[key] = (df, 1000.0)
     return out

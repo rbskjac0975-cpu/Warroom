@@ -10,7 +10,7 @@ import requests
 from data import COLS, IST, split_today
 
 SCRIP_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-INDEX_TOKEN = "99926000"  # NIFTY 50
+INDEX_TOKENS = {"^NSEI": ("NSE", "99926000"), "^NSEBANK": ("NSE", "99926009"), "^BSESN": ("BSE", "99919000")}
 _state = {"api": None, "day": None, "tokens": {}}
 
 
@@ -42,10 +42,10 @@ def _tokens(symbols):
     return {s: _state["tokens"][s] for s in symbols if s in _state["tokens"]}
 
 
-def _candles(sec, token, frm, to):
+def _candles(sec, token, frm, to, exch="NSE"):
     for attempt in range(3):
         res = _api(sec, force=attempt == 1).getCandleData(
-            {"exchange": "NSE", "symboltoken": token, "interval": "ONE_MINUTE",
+            {"exchange": exch, "symboltoken": token, "interval": "ONE_MINUTE",
              "fromdate": frm, "todate": to})
         if res and res.get("status") and res.get("data"):
             d = pd.DataFrame(res["data"], columns=["time"] + COLS)
@@ -61,11 +61,11 @@ def fetch_live(symbols, sec):
     now = pd.Timestamp.now(tz=IST)
     frm = (now - pd.Timedelta(days=7)).strftime("%Y-%m-%d 09:15")
     to = now.strftime("%Y-%m-%d %H:%M")
-    toks = _tokens(symbols)
-    toks["^NSEI"] = INDEX_TOKEN
+    toks = {s: ("NSE", t) for s, t in _tokens(symbols).items()}
+    toks.update(INDEX_TOKENS)
     out = {}
-    for sym, tok in toks.items():
-        d = _candles(sec, tok, frm, to)
+    for sym, (exch, tok) in toks.items():
+        d = _candles(sec, tok, frm, to, exch)
         if d is not None and not d.empty:
             out[sym] = split_today(d)
         time.sleep(0.4)  # stay under SmartAPI historical-data rate limit
