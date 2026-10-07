@@ -14,7 +14,7 @@ ss.setdefault("trades", {}); ss.setdefault("log", []); ss.setdefault("seen", set
 
 with st.sidebar:
     st.title("Before the Noise")
-    mode = st.radio("Data", ["Live (Angel One)", "Live (yfinance, delayed)", "Demo"], index=2)
+    mode = st.radio("Data", ["Live (Angel One)", "Live (yfinance, delayed)"], index=0)
     syms = [s.strip().upper() for s in st.text_area("Universe (comma separated)", DEFAULT).split(",") if s.strip()]
     vol_min = st.slider("Volume surge (x avg)", 1.0, 3.0, 1.5, 0.1)
     min_liq = st.number_input("Min avg 1-min volume (liquidity)", 0, 100000, 500, 100)
@@ -28,9 +28,7 @@ def load(mode, symbols):
     if mode.startswith("Live (Angel"):
         import angel
         return angel.fetch_live(list(symbols), st.secrets)
-    if mode.startswith("Live (yf"):
-        return data.fetch_live(list(symbols))
-    return data.demo_data(list(symbols))
+    return data.fetch_live(list(symbols))
 
 
 def war_room(sym, df, sig):
@@ -60,7 +58,7 @@ def body():
     try:
         d = load(mode, tuple(syms))
     except Exception as e:
-        st.error(f"Data fetch failed: {e}. Check secrets / try Demo mode.")
+        st.error(f"Data fetch failed: {e}. Check Angel One secrets or switch to yfinance.")
         return
     stocks = {s: v for s, v in d.items() if not s.startswith("^")}
     if "^NSEI" not in d or not stocks:
