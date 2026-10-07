@@ -30,10 +30,16 @@ def leaders(stocks, bias, sigs, min_avg_vol=500, vol_min=1.5, t_exp=60, t_str=40
         m = (df["volume"] >= vol_min * avg) & ((df["close"] - o) * d > 0)
         det = df.index[m.values][0] if m.any() else df.index[-1]
         st = _step(ltp)
+        c0, pc = df.iloc[0], df.attrs.get("prev_close")
+        bd, rg = abs(float(c0["close"] - c0["open"])), (float(c0["high"] - c0["low"]) or 1e-9)
         rows.append(dict(symbol=s, tier=tier, score=score, dir="LONG" if d > 0 else "SHORT", vol_ratio=round(vr, 2),
                          move=round(mv, 2), ltp=round(ltp, 2), detect=det, orb_level=round(orh if d > 0 else orl, 2),
                          sl_area=round(orl if d > 0 else orh, 2),
-                         strike=f"{round(ltp / st) * st:g} {'CE' if d > 0 else 'PE'}", brk=brk))
+                         strike=f"{round(ltp / st) * st:g} {'CE' if d > 0 else 'PE'}", brk=brk,
+                         gap=round((o / pc - 1) * 100, 2) if pc else 0.0, body=round(bd / o * 100, 2),
+                         cand="Strong" if bd / rg > 0.7 else "Moderate" if bd / rg > 0.4 else "Weak",
+                         from_low=round((ltp / float(df["low"].min()) - 1) * 100, 2),
+                         from_high=round((ltp / float(df["high"].max()) - 1) * 100, 2)))
     return sorted(rows, key=lambda r: (TIER_RANK[r["tier"]], -r["score"]))
 
 
