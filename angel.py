@@ -1,34 +1,55 @@
-"""Angel One SmartAPI feed: 1-min candles with real volume. Same return shape as data.fetch_live.
-Secrets needed: ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET."""
+"""Angel One SmartAPI feed via plain REST (no SDK, no extra installs - only `requests`).
+Same return shape as data.fetch_live. Secrets: ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET."""
+import base64
 import datetime as dt
+import hashlib
+import hmac
+import struct
 import time
 
 import pandas as pd
-import pyotp
 import requests
 
 from data import COLS, IST, split_today
 
+BASE = "https://apiconnect.angelone.in"
 SCRIP_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
 INDEX_TOKENS = {"^NSEI": ("NSE", "99926000"), "^NSEBANK": ("NSE", "99926009"), "^BSESN": ("BSE", "99919000")}
-_state = {"api": None, "day": None, "tokens": {}}
+_state = {"jwt": None, "day": None, "tokens": {}}
+
+
+def totp(secret, now=None, digits=6, step=30):
+    """RFC 6238 TOTP (stdlib only)."""
+    key = base64.b32decode(secret.replace(" ", "").upper() + "=" * (-len(secret.replace(" ", "")) % 8))
+    counter = int((time.time() if now is None else now) // step)
+    h = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    o = h[-1] & 15
+    return str((struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % 10 ** digits).zfill(digits)
+
+
+def _headers(sec, jwt=None):
+    h = {"Content-Type": "application/json", "Accept": "application/json", "X-UserType": "USER",
+         "X-SourceID": "WEB", "X-ClientLocalIP": "127.0.0.1", "X-ClientPublicIP": "127.0.0.1",
+         "X-MACAddress": "00:00:00:00:00:00", "X-PrivateKey": sec["ANGEL_API_KEY"]}
+    if jwt:
+        h["Authorization"] = f"Bearer {jwt}"
+    return h
 
 
 def _login(sec):
-    from SmartApi import SmartConnect
-    api = SmartConnect(api_key=sec["ANGEL_API_KEY"])
-    r = api.generateSession(sec["ANGEL_CLIENT_CODE"], sec["ANGEL_PIN"],
-                            pyotp.TOTP(sec["ANGEL_TOTP_SECRET"]).now())
-    if not r or not r.get("status"):
-        raise RuntimeError(f"Angel One login failed: {(r or {}).get('message')}")
-    return api
+    r = requests.post(f"{BASE}/rest/auth/angelbroking/user/v1/loginByPassword", headers=_headers(sec), timeout=30,
+                      json={"clientcode": sec["ANGEL_CLIENT_CODE"], "password": sec["ANGEL_PIN"],
+                            "totp": totp(sec["ANGEL_TOTP_SECRET"])})
+    j = r.json()
+    if not j.get("status"):
+        raise RuntimeError(f"Angel One login failed: {j.get('message')} ({j.get('errorcode')})")
+    return j["data"]["jwtToken"]
 
 
-def _api(sec, force=False):
-    today = dt.date.today()
-    if force or _state["api"] is None or _state["day"] != today:
-        _state["api"], _state["day"] = _login(sec), today
-    return _state["api"]
+def _jwt(sec, force=False):
+    if force or not _state["jwt"] or _state["day"] != dt.date.today():
+        _state["jwt"], _state["day"] = _login(sec), dt.date.today()
+    return _state["jwt"]
 
 
 def _tokens(symbols):
@@ -43,17 +64,25 @@ def _tokens(symbols):
 
 
 def _candles(sec, token, frm, to, exch="NSE"):
+    body = {"exchange": exch, "symboltoken": token, "interval": "ONE_MINUTE", "fromdate": frm, "todate": to}
+    last = None
     for attempt in range(3):
-        res = _api(sec, force=attempt == 1).getCandleData(
-            {"exchange": exch, "symboltoken": token, "interval": "ONE_MINUTE",
-             "fromdate": frm, "todate": to})
-        if res and res.get("status") and res.get("data"):
+        r = requests.post(f"{BASE}/rest/secure/angelbroking/historical/v1/getCandleData",
+                          headers=_headers(sec, _jwt(sec, force=attempt == 1)), json=body, timeout=30)
+        try:
+            res = r.json()
+        except ValueError:
+            res = {"message": r.text[:200]}
+        if res.get("status") and res.get("data"):
             d = pd.DataFrame(res["data"], columns=["time"] + COLS)
             d["time"] = pd.to_datetime(d["time"])
             d = d.set_index("time")
             d.index = d.index.tz_convert(IST) if d.index.tz is not None else d.index.tz_localize(IST)
             return d.astype(float)
-        time.sleep(1.0)  # rate limit / expired session: retry (2nd try re-logins)
+        last = res
+        time.sleep(1.0)  # rate limit or expired token: retry (2nd try re-logins)
+    if last and last.get("message"):
+        raise RuntimeError(f"Angel One candle error: {last.get('message')} ({last.get('errorcode')})")
     return None
 
 
@@ -68,5 +97,5 @@ def fetch_live(symbols, sec):
         d = _candles(sec, tok, frm, to, exch)
         if d is not None and not d.empty:
             out[sym] = split_today(d)
-        time.sleep(0.4)  # stay under SmartAPI historical-data rate limit
+        time.sleep(0.4)  # stay under the historical-data rate limit
     return out
